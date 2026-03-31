@@ -1148,6 +1148,93 @@ class TestNewBehaviours:
         print(f"    roof_planes_geometry: {len(out.roof_planes_geometry)} planes, "
               f"all keys present, ridge/eave values correct ✓")
 
+    def test_truss_positions_match_field_layout(self):
+        """
+        For a building length that is NOT a multiple of the truss spacing,
+        the module must use fixed 24\" steps with a short last bay —
+        exactly how trusses are physically laid out on site.
+
+        Example: 47 ft building at 24\" spacing
+          Correct:  0, 2, 4, ..., 46, 47  (24 bays: 23 × 24\" + 1 × 12\")
+          Wrong:    0, 1.958, 3.917, ...   (23.5\" o.c. throughout — not buildable)
+
+        Also verifies that total tributary widths sum to the building length,
+        confirming load conservation with the adjacent-gap trib formula.
+        """
+        # 47 ft — remainder = 1 ft (12\" last bay)
+        plane_47 = RoofPlane(
+            id="m", pitch_str="5/12",
+            perimeter=[Pt2(0,0), Pt2(32,0), Pt2(32,47), Pt2(0,47)],
+            eave_height_ft=10.0,
+        )
+        arch_47 = ArchitecturalInput(
+            city="Calgary", province="AB", importance_category="Normal",
+            roof_planes=[plane_47],
+            bearing_walls=[
+                BearingWall("n", Pt2(0,0),  Pt2(32,0),  True, True),
+                BearingWall("s", Pt2(0,47), Pt2(32,47), True, True),
+                BearingWall("e", Pt2(32,0), Pt2(32,47), True, True),
+                BearingWall("w", Pt2(0,0),  Pt2(0,47),  True, True),
+            ], num_stories=1,
+        )
+        out_47 = RoofStructuralDesigner(arch_47).design()
+        positions = [t.position_ft for t in out_47.trusses]
+        spacings_in = [
+            round((positions[i+1] - positions[i]) * 12, 1)
+            for i in range(len(positions) - 1)
+        ]
+
+        # All bays except the last must be exactly 24"
+        interior_bays = spacings_in[:-1]
+        assert all(abs(s - 24.0) < 0.2 for s in interior_bays), \
+            f"Interior bays must be 24\", got {set(interior_bays)}"
+
+        # Last bay must be 12" (47 - 46 = 1 ft)
+        last_bay_in = spacings_in[-1]
+        assert abs(last_bay_in - 12.0) < 0.2, \
+            f"Last bay should be 12\", got {last_bay_in}\""
+
+        # First and last positions must be at 0 and 47
+        assert abs(positions[0]  - 0.0)  < 0.01
+        assert abs(positions[-1] - 47.0) < 0.01
+
+        # Load conservation: sum of tributary widths = building length
+        DL, span_ft = out_47.loads.dead_psf, 32.0
+        trib_sum = sum(
+            t.reaction_dead_lbs / (DL * span_ft / 2.0)
+            for t in out_47.trusses
+        )
+        assert abs(trib_sum - 47.0) < 0.1, \
+            f"Trib sum should be 47.0 ft, got {trib_sum:.4f}"
+
+        # Also verify 45 ft (another non-multiple: 45 = 22×2 + 1 ft)
+        plane_45 = RoofPlane(
+            id="m", pitch_str="5/12",
+            perimeter=[Pt2(0,0), Pt2(32,0), Pt2(32,45), Pt2(0,45)],
+            eave_height_ft=10.0,
+        )
+        arch_45 = ArchitecturalInput(
+            city="Calgary", province="AB", importance_category="Normal",
+            roof_planes=[plane_45],
+            bearing_walls=[
+                BearingWall("n", Pt2(0,0),  Pt2(32,0),  True, True),
+                BearingWall("s", Pt2(0,45), Pt2(32,45), True, True),
+                BearingWall("e", Pt2(32,0), Pt2(32,45), True, True),
+                BearingWall("w", Pt2(0,0),  Pt2(0,45),  True, True),
+            ], num_stories=1,
+        )
+        out_45 = RoofStructuralDesigner(arch_45).design()
+        pos_45 = [t.position_ft for t in out_45.trusses]
+        sp_45  = [round((pos_45[i+1]-pos_45[i])*12, 1) for i in range(len(pos_45)-1)]
+        assert all(abs(s-24.0) < 0.2 for s in sp_45[:-1]), \
+            f"45ft interior bays must be 24\", got {set(sp_45[:-1])}"
+        assert abs(sp_45[-1] - 12.0) < 0.2, \
+            f"45ft last bay should be 12\", got {sp_45[-1]}\""
+
+        print(f"    47ft: {len(positions)} trusses @ 24\" + 12\" last bay, "
+              f"trib_sum={trib_sum:.3f}ft ✓")
+        print(f"    45ft: {len(pos_45)} trusses @ 24\" + 12\" last bay ✓")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Integration prints

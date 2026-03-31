@@ -556,17 +556,43 @@ class RoofStructuralDesigner:
             if not walls:
                 walls = [w.id for w in self.arch.bearing_walls[:2]]
 
-            n = max(2, round(len_ft / sp_ft) + 1)
-            positions = [i * (len_ft / (n - 1)) for i in range(n)]
+            # ── Field-accurate truss positions ────────────────────────────────
+            # Industry practice: gable end truss at position 0, then step at the
+            # design spacing until the far gable end. The last bay absorbs any
+            # remainder — it may be shorter than the design spacing.
+            # This matches how trusses are actually laid out and ordered.
+            #
+            # Example: 47 ft building at 24" spacing
+            #   Correct:  0, 2, 4, ..., 46, 47  (last bay = 12")
+            #   Wrong:    0, 1.958, 3.917, ...   (all bays 23.5" — not buildable)
+            positions: list[float] = [0.0]
+            pos = sp_ft
+            while pos < len_ft - 0.001:
+                positions.append(round(pos, 4))
+                pos += sp_ft
+            positions.append(round(len_ft, 4))   # far gable end
 
-            for i, pos in enumerate(positions):
-                is_end  = (i == 0 or i == n - 1)
-                trib_ft = sp_ft / 2.0 if is_end else sp_ft
+            for i, position in enumerate(positions):
+                is_end = (i == 0 or i == len(positions) - 1)
+
+                # Tributary width: half the gap to each neighbour.
+                # For end trusses this uses the actual adjacent gap (which may
+                # be shorter than sp_ft for a short last bay), ensuring the sum
+                # of all tributary widths equals the building length exactly.
+                if i == 0:
+                    trib_ft = (positions[1] - positions[0]) / 2.0
+                elif i == len(positions) - 1:
+                    trib_ft = (positions[-1] - positions[-2]) / 2.0
+                else:
+                    left_gap  = position - positions[i - 1]
+                    right_gap = positions[i + 1] - position
+                    trib_ft   = (left_gap + right_gap) / 2.0
+
                 rd, rs, rf = self._truss_reactions(span_ft, trib_ft)
                 trusses.append(TrussInfo(
                     id=f"{plane.id}_T{i+1:02d}",
                     kind="gable_end" if is_end else "common",
-                    position_ft=round(pos, 2),
+                    position_ft=round(position, 2),
                     span_ft=round(span_ft, 1),
                     spacing_in=self._loads.truss_spacing_in,
                     bearing_wall_ids=walls[:2],
